@@ -1,7 +1,5 @@
 # Scan domains for certificates and information about them
 
-
-
 ## Useage
 
 Single Domain
@@ -9,6 +7,8 @@ python3 getCertificates.py -s localhost
 
 Multidomain from file
 python3 getCertificates.py -f domains.txt
+
+python3 getCertificates.py -f domains.txt -o domains.csv
 
 ## Help
 
