@@ -230,12 +230,27 @@ function Write-LogFile {
         
         Add-Content -Path $LogPath -Value $logEntry -Encoding UTF8 -ErrorAction SilentlyContinue
         
-        # Also write to console based on preference
+        # Only write to console for warnings and info (errors are logged but not displayed)
+        # Error messages are handled by the calling functions with user-friendly messages
         switch ($Level) {
-            'Error' { Write-Error $Message -ErrorAction Continue }
-            'Warning' { Write-Warning $Message }
-            'Info' { if ($VerbosePreference -ne 'SilentlyContinue') { Write-Host $Message } }
-            'Debug' { Write-Debug $Message }
+            'Error' { 
+                # Don't write errors to console - they're logged to file only
+                # The calling function should display user-friendly error messages
+            }
+            'Warning' { 
+                # Only show warnings if not in silent mode
+                if ($VerbosePreference -ne 'SilentlyContinue') {
+                    Write-Warning $Message 
+                }
+            }
+            'Info' { 
+                if ($VerbosePreference -ne 'SilentlyContinue') { 
+                    Write-Host $Message 
+                } 
+            }
+            'Debug' { 
+                Write-Debug $Message 
+            }
         }
     }
     catch {
@@ -381,6 +396,9 @@ function Get-SslCertificate {
         [int]$TimeoutSeconds = 5
     )
 
+    # Suppress error output - we handle errors internally
+    $ErrorActionPreference = 'Stop'
+    
     $tcpClient = $null
     $sslStream = $null
 
@@ -431,28 +449,39 @@ function Get-SslCertificate {
         }
 
         # Convert to X509Certificate2
-        $x509Cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert)
-
-        Write-LogFile -Message "Certificate retrieved successfully for $Address`:$Port" -Level "Info" -FunctionName "Get-SslCertificate"
-        
-        return $x509Cert
-    }
-    catch [System.Net.Sockets.SocketException] {
-        Write-LogFile -Message "$Address`:$Port is not reachable: $_" -Level "Warning" -FunctionName "Get-SslCertificate"
-        Write-LogFile -Message "Error details: $_" -Level "Error" -FunctionName "Get-SslCertificate"
-        return $null
-    }
-    catch [System.Net.Sockets.TimeoutException] {
-        Write-LogFile -Message "Socket timed out while checking certificate for $Address`:$Port" -Level "Error" -FunctionName "Get-SslCertificate"
-        return $null
-    }
-    catch [System.Security.Authentication.AuthenticationException] {
-        Write-LogFile -Message "SSL handshake failed for $Address, $Port`: $_" -Level "Error" -FunctionName "Get-SslCertificate"
-        return $null
+        try {
+            $x509Cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($cert)
+            Write-LogFile -Message "Certificate retrieved successfully for $Address`:$Port" -Level "Info" -FunctionName "Get-SslCertificate"
+            return $x509Cert
+        }
+        catch {
+            Write-LogFile -Message "Failed to parse certificate for $Address`:$Port`: $($_.Exception.Message)" -Level "Error" -FunctionName "Get-SslCertificate"
+            return $null
+        }
     }
     catch {
-        Write-LogFile -Message "Unexpected error retrieving certificate for $Address`:$Port`: $_" -Level "Error" -FunctionName "Get-SslCertificate"
-        return $null
+        # Handle different exception types
+        $exceptionType = $_.Exception.GetType().FullName
+        
+        if ($exceptionType -eq 'System.Net.Sockets.SocketException' -or 
+            $_.Exception -is [System.Net.Sockets.SocketException]) {
+            Write-LogFile -Message "$Address`:$Port is not reachable: $($_.Exception.Message)" -Level "Warning" -FunctionName "Get-SslCertificate"
+            return $null
+        }
+        elseif ($exceptionType -like '*TimeoutException*' -or 
+                $_.Exception -is [System.TimeoutException]) {
+            Write-LogFile -Message "Connection timed out for $Address`:$Port" -Level "Error" -FunctionName "Get-SslCertificate"
+            return $null
+        }
+        elseif ($exceptionType -eq 'System.Security.Authentication.AuthenticationException' -or 
+                $_.Exception -is [System.Security.Authentication.AuthenticationException]) {
+            Write-LogFile -Message "SSL handshake failed for $Address, $Port`: $($_.Exception.Message)" -Level "Error" -FunctionName "Get-SslCertificate"
+            return $null
+        }
+        else {
+            Write-LogFile -Message "Error retrieving certificate for $Address`:$Port`: $($_.Exception.Message)" -Level "Error" -FunctionName "Get-SslCertificate"
+            return $null
+        }
     }
     finally {
         # Clean up resources
@@ -888,7 +917,8 @@ function Test-DomainInput {
             Start-Sleep -Seconds $backoffSeconds
         }
         
-        $cert = Get-SslCertificate -Address $domain -Port $port -TimeoutSeconds $Timeout
+        # Suppress error output from Get-SslCertificate (we handle errors ourselves)
+        $cert = Get-SslCertificate -Address $domain -Port $port -TimeoutSeconds $Timeout -ErrorAction SilentlyContinue
         
         if ($cert) {
             break
@@ -898,8 +928,12 @@ function Test-DomainInput {
     }
 
     if (-not $cert) {
-        Write-Host "$originalInput is down"
-        Write-LogFile -Message "$originalInput is down" -Level "Error" -FunctionName "Test-DomainInput"
+        # Provide a cleaner error message
+        Write-Host ""
+        Write-Host "✗ $originalInput is not reachable or does not have a valid SSL certificate" -ForegroundColor Red
+        Write-Host "  Port: $port | Timeout: ${Timeout}s" -ForegroundColor Gray
+        Write-Host ""
+        Write-LogFile -Message "$originalInput is down or unreachable" -Level "Error" -FunctionName "Test-DomainInput"
         $script:Stats.TotalProcessed++
         $script:Stats.Failed++
         $script:CertificateData += [PSCustomObject]@{
@@ -944,15 +978,16 @@ function Test-DomainInput {
             $script:Stats.ExpiringSoon++
         }
 
-        # Display certificate information
-        Write-Host "SSL Certificate for $originalInput"
-        Write-Host "IP address = $ipAddress"
-        Write-Host "Port = $port"
-        Write-Host "Common Name = $certCommonName"
-        Write-Host "Expires on = $expDate"
-        Write-Host "serial# = $serialNumber"
-        Write-Host "Thumbprint = $thumbprint"
-        Write-Host "SAN = $certSan"
+        # Display certificate information with better formatting
+        Write-Host ""
+        Write-Host "✓ SSL Certificate for $originalInput" -ForegroundColor Green
+        Write-Host "  IP Address: $ipAddress" -ForegroundColor Cyan
+        Write-Host "  Port: $port" -ForegroundColor Cyan
+        Write-Host "  Common Name: $certCommonName" -ForegroundColor Cyan
+        Write-Host "  Expires: $expDate" -ForegroundColor Cyan
+        Write-Host "  Serial #: $serialNumber" -ForegroundColor Cyan
+        Write-Host "  Thumbprint: $thumbprint" -ForegroundColor Cyan
+        Write-Host "  SAN: $certSan" -ForegroundColor Cyan
         Write-Host ""
 
         # Add to collection
@@ -1147,10 +1182,26 @@ if (-not $isDotSourced -and $PSCmdlet -ne $null) {
         Test-DomainInput -DomainInput $Single -RetryCount $RetryCount
     }
 
-    # Export to CSV if output specified or if we have data
-    if ($Output -or $script:CertificateData.Count -gt 0) {
-        $outputBase = if ($Output) { $Output } else { "certificates" }
+    # Export to CSV only when using DomainFile (not for single domain queries)
+    # Single domain queries only display to console
+    if ($hasValidDomainFile -and $script:CertificateData.Count -gt 0) {
+        # Determine output base name:
+        # 1. If -Output is specified, use it
+        # 2. Otherwise, use the input filename (without extension) as default
+        if ($Output) {
+            $outputBase = $Output
+        }
+        else {
+            # Extract base filename from DomainFile (remove path and extension)
+            $inputFileName = [System.IO.Path]::GetFileNameWithoutExtension($DomainFile)
+            $outputBase = $inputFileName
+        }
+        
         Export-CertificateData -OutputBase $outputBase -CertificateData $script:CertificateData
+    }
+    elseif ($hasValidSingle -and $Output) {
+        # If user explicitly specifies -Output with -Single, honor it
+        Export-CertificateData -OutputBase $Output -CertificateData $script:CertificateData
     }
 
     # Display statistics

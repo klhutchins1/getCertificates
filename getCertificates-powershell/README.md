@@ -33,12 +33,20 @@ A PowerShell script to query SSL/TLS certificates from domains and extract certi
 ### Single Domain
 
 ```powershell
+# Output to console only (no CSV file created)
 .\Get-Certificates.ps1 -Single "example.com"
+
+# Or explicitly create CSV file
+.\Get-Certificates.ps1 -Single "example.com" -Output "result"
 ```
 
 ### Multiple Domains from File
 
 ```powershell
+# Uses input filename as output (domains-010124.csv)
+.\Get-Certificates.ps1 -DomainFile "domains.txt"
+
+# Or specify custom output name
 .\Get-Certificates.ps1 -DomainFile "domains.txt" -Output "results"
 ```
 
@@ -124,9 +132,11 @@ The script generates a CSV file with the following columns:
 
 ### File Naming
 
-CSV files are automatically named with the current date appended:
-- If `-Output "domains"` is specified → `domains-010124.csv`
-- If `-Output` is not specified → `certificates-010124.csv`
+CSV files are automatically created and named when using `-DomainFile`:
+- If `-DomainFile "domains.txt"` is used (without `-Output`): Automatically creates `domains-010124.csv` using input filename
+- If `-DomainFile "domains.txt" -Output "results"` is used: Creates `results-010124.csv` with specified name
+- If `-Single` is used: **No CSV file is created** (output only to console)
+- If `-Single "example.com" -Output "result"` is used: Creates `result-010124.csv` (explicit output requested)
 - Format: `{filename}-{DDMMYY}.csv`
 
 ### Console Output
